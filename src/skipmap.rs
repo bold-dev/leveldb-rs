@@ -110,7 +110,7 @@ impl InnerSkipMap {
     fn random_height(&mut self) -> usize {
         let mut height = 1;
 
-        while height < MAX_HEIGHT && self.rand.next_u32().is_multiple_of(BRANCHING_FACTOR) {
+        while height < MAX_HEIGHT && self.rand.next_u32() % BRANCHING_FACTOR == 0 {
             height += 1;
         }
 

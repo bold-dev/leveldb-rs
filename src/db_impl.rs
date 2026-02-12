@@ -115,6 +115,16 @@ impl DB {
     ///
     /// Whether a new database is created and what happens if a database exists at the given path
     /// depends on the options set (`create_if_missing`, `error_if_exists`).
+    /// Opens a database in read-only mode without acquiring the LOCK file.
+    /// This allows reading a database that is already open by another process.
+    /// No log files, manifest writes, file deletions, or compactions are performed.
+    pub fn open_read_only<P: AsRef<Path>>(name: P, opt: Options) -> Result<DB> {
+        let name = name.as_ref();
+        let mut db = DB::new(name, opt);
+        db.recover_read_only()?;
+        Ok(db)
+    }
+
     pub fn open<P: AsRef<Path>>(name: P, opt: Options) -> Result<DB> {
         let name = name.as_ref();
         let mut db = DB::new(name, opt);
@@ -225,6 +235,13 @@ impl DB {
         }
 
         Ok(save_manifest)
+    }
+
+    /// Read-only recovery: only recovers the version set (CURRENT + MANIFEST) without
+    /// acquiring the lock, replaying WAL logs, or performing any writes.
+    fn recover_read_only(&mut self) -> Result<()> {
+        self.vset.borrow_mut().recover()?;
+        Ok(())
     }
 
     /// recover_log_file reads a single log file into a memtable, writing new L0 tables if
