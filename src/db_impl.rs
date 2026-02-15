@@ -237,10 +237,58 @@ impl DB {
         Ok(save_manifest)
     }
 
-    /// Read-only recovery: only recovers the version set (CURRENT + MANIFEST) without
-    /// acquiring the lock, replaying WAL logs, or performing any writes.
+    /// Read-only recovery: recovers the version set (CURRENT + MANIFEST) without
+    /// acquiring the lock or performing any writes. WAL logs are replayed into the
+    /// in-memory memtable so that recent un-compacted writes are visible to reads.
     fn recover_read_only(&mut self) -> Result<()> {
         self.vset.borrow_mut().recover()?;
+
+        // Replay WAL log files into the memtable (without writing L0 tables or manifest).
+        let filenames = self.opt.env.children(&self.path)?;
+        let mut log_files = vec![];
+        for file in &filenames {
+            if let Ok((num, typ)) = parse_file_name(file) {
+                if typ == FileType::Log
+                    && (num >= self.vset.borrow().log_num
+                        || num == self.vset.borrow().prev_log_num)
+                {
+                    log_files.push(num);
+                }
+            }
+        }
+        log_files.sort();
+
+        let mut max_seq = 0;
+
+        for log_num in log_files {
+            let filename = log_file_name(&self.path, log_num);
+            let logfile = self.opt.env.open_sequential_file(Path::new(&filename))?;
+            let mut logreader = LogReader::new(logfile, true);
+            let mut scratch = vec![];
+            let mut batch = WriteBatch::new();
+
+            while let Ok(len) = logreader.read(&mut scratch) {
+                if len == 0 {
+                    break;
+                }
+                if len < 12 {
+                    continue;
+                }
+                batch.set_contents(&scratch);
+                batch.insert_into_memtable(batch.sequence(), &mut self.mem);
+
+                let last_seq = batch.sequence() + batch.count() as u64 - 1;
+                if last_seq > max_seq {
+                    max_seq = last_seq;
+                }
+                batch.clear();
+            }
+        }
+
+        if self.vset.borrow().last_seq < max_seq {
+            self.vset.borrow_mut().last_seq = max_seq;
+        }
+
         Ok(())
     }
 
