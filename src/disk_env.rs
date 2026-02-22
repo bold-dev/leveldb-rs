@@ -1,21 +1,14 @@
 use crate::env::{path_to_str, Env, FileLock, Logger, RandomAccess};
 use crate::env_common::{micros, sleep_for};
 use crate::error::{err, Result, Status, StatusCode};
-use crate::types::{share, Shared};
-use fs2::FileExt;
 
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read, Write};
+use std::fs;
+use std::io::{self, Read};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
-type FileDescriptor = i32;
-
 #[derive(Clone)]
-pub struct PosixDiskEnv {
-    locks: Shared<HashMap<String, File>>,
-}
+pub struct PosixDiskEnv;
 
 impl Default for PosixDiskEnv {
     fn default() -> Self {
@@ -25,9 +18,7 @@ impl Default for PosixDiskEnv {
 
 impl PosixDiskEnv {
     pub fn new() -> PosixDiskEnv {
-        PosixDiskEnv {
-            locks: share(HashMap::new()),
-        }
+        PosixDiskEnv
     }
 }
 
@@ -38,8 +29,6 @@ fn map_err_with_name(method: &'static str, f: &Path, e: io::Error) -> Status {
     s
 }
 
-// Note: We're using Ok(f()?) in several locations below in order to benefit from the automatic
-// error conversion using std::convert::From.
 impl Env for PosixDiskEnv {
     fn open_sequential_file(&self, p: &Path) -> Result<Box<dyn Read>> {
         Ok(Box::new(
@@ -59,25 +48,11 @@ impl Env for PosixDiskEnv {
             })
             .map_err(|e| map_err_with_name("open (randomaccess)", p, e))
     }
-    fn open_writable_file(&self, p: &Path) -> Result<Box<dyn Write>> {
-        Ok(Box::new(
-            fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .append(false)
-                .open(p)
-                .map_err(|e| map_err_with_name("open (write)", p, e))?,
-        ))
+    fn open_writable_file(&self, p: &Path) -> Result<Box<dyn std::io::Write>> {
+        err(StatusCode::NotSupported, &format!("open (write): read-only env: {}", path_to_str(p)))
     }
-    fn open_appendable_file(&self, p: &Path) -> Result<Box<dyn Write>> {
-        Ok(Box::new(
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .map_err(|e| map_err_with_name("open (append)", p, e))?,
-        ))
+    fn open_appendable_file(&self, p: &Path) -> Result<Box<dyn std::io::Write>> {
+        err(StatusCode::NotSupported, &format!("open (append): read-only env: {}", path_to_str(p)))
     }
 
     fn exists(&self, p: &Path) -> Result<bool> {
@@ -102,75 +77,27 @@ impl Env for PosixDiskEnv {
     }
 
     fn delete(&self, p: &Path) -> Result<()> {
-        fs::remove_file(p).map_err(|e| map_err_with_name("delete", p, e))
+        err(StatusCode::NotSupported, &format!("delete: read-only env: {}", path_to_str(p)))
     }
     fn mkdir(&self, p: &Path) -> Result<()> {
-        fs::create_dir_all(p).map_err(|e| map_err_with_name("mkdir", p, e))
+        err(StatusCode::NotSupported, &format!("mkdir: read-only env: {}", path_to_str(p)))
     }
     fn rmdir(&self, p: &Path) -> Result<()> {
-        fs::remove_dir_all(p).map_err(|e| map_err_with_name("rmdir", p, e))
+        err(StatusCode::NotSupported, &format!("rmdir: read-only env: {}", path_to_str(p)))
     }
     fn rename(&self, old: &Path, new: &Path) -> Result<()> {
-        fs::rename(old, new).map_err(|e| map_err_with_name("rename", old, e))
+        err(StatusCode::NotSupported, &format!("rename: read-only env: {} -> {}", path_to_str(old), path_to_str(new)))
     }
 
     fn lock(&self, p: &Path) -> Result<FileLock> {
-        let mut locks = self.locks.borrow_mut();
-
-        if let std::collections::hash_map::Entry::Vacant(e) =
-            locks.entry(p.to_str().unwrap().to_string())
-        {
-            let f = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(p)
-                .map_err(|e| map_err_with_name("lock", p, e))?;
-
-            match f.try_lock_exclusive() {
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    return Err(Status::new(
-                        StatusCode::LockError,
-                        "lock on database is already held by different process",
-                    ))
-                }
-                Err(_) => {
-                    return Err(Status::new(
-                        StatusCode::Errno(errno::errno()),
-                        &format!("unknown lock error on file {:?} (file {})", f, p.display()),
-                    ))
-                }
-                _ => (),
-            };
-
-            e.insert(f);
-            let lock = FileLock {
-                id: p.to_str().unwrap().to_string(),
-            };
-            Ok(lock)
-        } else {
-            Err(Status::new(StatusCode::AlreadyExists, "Lock is held"))
-        }
+        err(StatusCode::NotSupported, &format!("lock: read-only env: {}", path_to_str(p)))
     }
-    fn unlock(&self, l: FileLock) -> Result<()> {
-        let mut locks = self.locks.borrow_mut();
-        if !locks.contains_key(&l.id) {
-            err(
-                StatusCode::LockError,
-                &format!("unlocking a file that is not locked: {}", l.id),
-            )
-        } else {
-            let f = locks.remove(&l.id).unwrap();
-            if f.unlock().is_err() {
-                return err(StatusCode::LockError, &format!("unlock failed: {}", l.id));
-            }
-            Ok(())
-        }
+    fn unlock(&self, _: FileLock) -> Result<()> {
+        Ok(())
     }
 
     fn new_logger(&self, p: &Path) -> Result<Logger> {
-        self.open_appendable_file(p)
-            .map(|dst| Logger::new(Box::new(dst)))
+        err(StatusCode::NotSupported, &format!("new_logger: read-only env: {}", path_to_str(p)))
     }
 
     fn micros(&self) -> u64 {
@@ -185,91 +112,33 @@ impl Env for PosixDiskEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::convert::AsRef;
     use std::io::Write;
-    use std::iter::FromIterator;
 
     #[test]
-    fn test_files() {
-        let n = "testfile.xyz".to_string();
-        let name = n.as_ref();
+    fn test_read_only_ops_fail() {
         let env = PosixDiskEnv::new();
-
-        // exists, size_of, delete
-        assert!(env.open_appendable_file(name).is_ok());
-        assert!(env.exists(name).unwrap_or(false));
-        assert_eq!(env.size_of(name).unwrap_or(1), 0);
-        assert!(env.delete(name).is_ok());
-
-        assert!(env.open_writable_file(name).is_ok());
-        assert!(env.exists(name).unwrap_or(false));
-        assert_eq!(env.size_of(name).unwrap_or(1), 0);
-        assert!(env.delete(name).is_ok());
-
-        {
-            // write
-            let mut f = env.open_writable_file(name).unwrap();
-            let _ = f.write("123xyz".as_bytes());
-            assert_eq!(6, env.size_of(name).unwrap_or(0));
-
-            // rename
-            let newname = Path::new("testfile2.xyz");
-            assert!(env.rename(name, newname).is_ok());
-            assert_eq!(6, env.size_of(newname).unwrap());
-            assert!(!env.exists(name).unwrap());
-            // rename back so that the remaining tests can use the file.
-            assert!(env.rename(newname, name).is_ok());
-        }
-
-        assert!(env.open_sequential_file(name).is_ok());
-        assert!(env.open_random_access_file(name).is_ok());
-
-        assert!(env.delete(name).is_ok());
+        let p = Path::new("testfile.xyz");
+        assert!(env.open_writable_file(p).is_err());
+        assert!(env.open_appendable_file(p).is_err());
+        assert!(env.delete(p).is_err());
+        assert!(env.mkdir(p).is_err());
+        assert!(env.rmdir(p).is_err());
+        assert!(env.rename(p, Path::new("other.xyz")).is_err());
+        assert!(env.lock(p).is_err());
     }
 
     #[test]
-    fn test_locking() {
+    fn test_read_ops_work() {
+        // Create a real file using std::fs directly, then read it via PosixDiskEnv.
+        let path = Path::new("diskenv_test_read.tmp");
+        std::fs::File::create(path).unwrap().write_all(b"hello").unwrap();
+
         let env = PosixDiskEnv::new();
-        let n = "testfile.123".to_string();
-        let name = n.as_ref();
+        assert!(env.exists(path).unwrap());
+        assert_eq!(env.size_of(path).unwrap(), 5);
+        assert!(env.open_sequential_file(path).is_ok());
+        assert!(env.open_random_access_file(path).is_ok());
 
-        {
-            let mut f = env.open_writable_file(name).unwrap();
-            let _ = f.write("123xyz".as_bytes());
-            assert_eq!(env.size_of(name).unwrap_or(0), 6);
-        }
-
-        {
-            let r = env.lock(name);
-            assert!(r.is_ok());
-            env.unlock(r.unwrap()).unwrap();
-        }
-
-        {
-            let r = env.lock(name);
-            assert!(r.is_ok());
-            let s = env.lock(name);
-            assert!(s.is_err());
-            env.unlock(r.unwrap()).unwrap();
-        }
-
-        assert!(env.delete(name).is_ok());
-    }
-
-    #[test]
-    fn test_dirs() {
-        let d = "subdir/";
-        let dirname = d.as_ref();
-        let env = PosixDiskEnv::new();
-
-        assert!(env.mkdir(dirname).is_ok());
-        assert!(env
-            .open_writable_file(
-                String::from_iter(vec![d.to_string(), "f1.txt".to_string()].into_iter()).as_ref()
-            )
-            .is_ok());
-        assert_eq!(env.children(dirname).unwrap().len(), 1);
-        assert!(env.rmdir(dirname).is_ok());
+        std::fs::remove_file(path).unwrap();
     }
 }
