@@ -161,7 +161,11 @@ impl<R: Read> LogReader<R> {
             length = u16::decode_fixed(&self.head_scratch[4..6]);
             typ = self.head_scratch[6];
 
-            dst.resize(dst_offset + length as usize, 0);
+            let new_len = dst_offset + length as usize;
+            if new_len > crate::error::MAX_ALLOC_SIZE {
+                return err(StatusCode::Corruption, "unreasonable log record size");
+            }
+            dst.resize(new_len, 0);
             bytes_read = self
                 .src
                 .read(&mut dst[dst_offset..dst_offset + length as usize])?;

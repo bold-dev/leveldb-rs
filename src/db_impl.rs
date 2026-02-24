@@ -137,7 +137,11 @@ impl DB {
         let key = key.to_vec();
         let task = tokio::task::spawn_blocking(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut db = DB::open_read_only(path, Options::default())?;
+                let opt = Options {
+                    create_if_missing: false,
+                    ..Options::default()
+                };
+                let mut db = DB::open_read_only(path, opt)?;
                 Ok(db.get(&key).map(|b| b.to_vec()))
             }))
             .unwrap_or_else(|e| {
