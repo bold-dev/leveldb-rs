@@ -8,7 +8,7 @@ use crate::db_iter::DBIterator;
 
 use crate::cmp::{Cmp, InternalKeyCmp};
 use crate::env::{Env, FileLock};
-use crate::error::{err, Result, StatusCode};
+use crate::error::{err, Result, Status, StatusCode};
 use crate::filter::{BoxedFilterPolicy, InternalFilterPolicy};
 use crate::infolog::Logger;
 use crate::key_types::{parse_internal_key, InternalKey, LookupKey, ValueType};
@@ -1190,6 +1190,155 @@ fn open_info_log<E: Env + ?Sized, P: AsRef<Path>>(env: &E, db: P) -> Logger {
         Logger(w)
     } else {
         Logger(Box::new(io::sink()))
+    }
+}
+
+/// A safe, async handle to a read-only LevelDB database.
+///
+/// The underlying `DB` lives on a dedicated blocking thread. Requests are sent
+/// via a channel, and each `get` is wrapped in `catch_unwind` to convert panics
+/// into errors. The DB never crosses thread boundaries.
+///
+/// ```no_run
+/// use rusty_leveldb::SafeDB;
+/// use std::time::Duration;
+///
+/// # async fn example() -> rusty_leveldb::Result<()> {
+/// let db = SafeDB::open("mydb", Duration::from_secs(5)).await?;
+/// let val = db.get(b"key").await?;
+/// db.close().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct SafeDB {
+    sender: tokio::sync::mpsc::Sender<ServerMsg>,
+    timeout: std::time::Duration,
+}
+
+struct SafeDBRequest {
+    key: Vec<u8>,
+    resp: tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>>>,
+}
+
+enum ServerMsg {
+    Get(SafeDBRequest),
+    Close(tokio::sync::oneshot::Sender<Result<()>>),
+}
+
+impl SafeDB {
+    /// Open a read-only database at the given path.
+    ///
+    /// The database is opened on a blocking thread. If the open takes longer
+    /// than `timeout`, returns a timeout error.
+    pub async fn open<P: AsRef<Path> + Send + 'static>(
+        path: P,
+        timeout: std::time::Duration,
+    ) -> Result<SafeDB> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ServerMsg>(32);
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+
+        tokio::task::spawn_blocking(move || {
+            let open_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let opt = Options {
+                    create_if_missing: false,
+                    ..Options::default()
+                };
+                DB::open_read_only(path, opt)
+            }));
+
+            let mut db = match open_result {
+                Ok(Ok(db)) => {
+                    let _ = open_tx.send(Ok(()));
+                    db
+                }
+                Ok(Err(e)) => {
+                    let _ = open_tx.send(Err(e));
+                    return;
+                }
+                Err(e) => {
+                    let _ =
+                        open_tx.send(Err(Status::new(StatusCode::Corruption, &format_panic(e))));
+                    return;
+                }
+            };
+
+            Self::run_server(&mut db, rx);
+        });
+
+        match tokio::time::timeout(timeout, open_rx).await {
+            Ok(Ok(Ok(()))) => Ok(SafeDB {
+                sender: tx,
+                timeout,
+            }),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_)) => err(StatusCode::IOError, "db thread dropped during open"),
+            Err(_) => err(StatusCode::IOError, "open timed out"),
+        }
+    }
+
+    fn run_server(db: &mut DB, mut rx: tokio::sync::mpsc::Receiver<ServerMsg>) {
+        while let Some(msg) = rx.blocking_recv() {
+            match msg {
+                ServerMsg::Get(req) => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Ok(db.get(&req.key).map(|b| b.to_vec()))
+                    }))
+                    .unwrap_or_else(|e| err(StatusCode::Corruption, &format_panic(e)));
+                    let _ = req.resp.send(result);
+                }
+                ServerMsg::Close(resp) => {
+                    let _ = resp.send(Ok(()));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Read a value from the database.
+    ///
+    /// Returns `Ok(None)` if the key doesn't exist, `Ok(Some(vec))` if found,
+    /// or `Err` on corruption, panic, or timeout.
+    pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        let req = SafeDBRequest {
+            key: key.to_vec(),
+            resp: resp_tx,
+        };
+        self.sender
+            .send(ServerMsg::Get(req))
+            .await
+            .map_err(|_| Status::new(StatusCode::IOError, "db thread gone"))?;
+
+        match tokio::time::timeout(self.timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => err(StatusCode::IOError, "db thread dropped during get"),
+            Err(_) => err(StatusCode::IOError, "get timed out"),
+        }
+    }
+
+    /// Close the database. The blocking thread will exit after this.
+    pub async fn close(&self) -> Result<()> {
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ServerMsg::Close(resp_tx))
+            .await
+            .map_err(|_| Status::new(StatusCode::IOError, "db thread gone"))?;
+
+        match tokio::time::timeout(self.timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => err(StatusCode::IOError, "db thread dropped during close"),
+            Err(_) => err(StatusCode::IOError, "close timed out"),
+        }
+    }
+}
+
+fn format_panic(e: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = e.downcast_ref::<&str>() {
+        format!("panic: {}", s)
+    } else if let Some(s) = e.downcast_ref::<String>() {
+        format!("panic: {}", s)
+    } else {
+        "panic during DB operation".to_string()
     }
 }
 

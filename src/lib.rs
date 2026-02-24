@@ -64,7 +64,7 @@ pub mod env;
 
 pub use cmp::{Cmp, DefaultCmp};
 pub use compressor::{Compressor, CompressorId};
-pub use db_impl::DB;
+pub use db_impl::{SafeDB, DB};
 pub use db_iter::DBIterator;
 pub use disk_env::PosixDiskEnv;
 pub use error::{Result, Status, StatusCode};
