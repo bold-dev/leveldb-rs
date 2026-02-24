@@ -5,6 +5,9 @@ use std::io;
 use std::result;
 use std::sync;
 
+/// Maximum size for a single allocation from file-derived data (100 MB).
+pub const MAX_ALLOC_SIZE: usize = 100 * 1024 * 1024;
+
 /// StatusCode describes various failure modes of database operations.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
@@ -21,10 +24,7 @@ pub enum StatusCode {
     NotFound,
     NotSupported,
     PermissionDenied,
-    AsyncError,
     Unknown,
-    #[cfg(feature = "fs")]
-    Errno(errno::Errno),
 }
 
 /// Status encapsulates a `StatusCode` and an error message. It can be displayed, and also

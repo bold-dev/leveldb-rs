@@ -62,8 +62,6 @@ pub struct DB {
     cstats: [CompactionStats; NUM_LEVELS],
 }
 
-unsafe impl Send for DB {}
-
 impl DB {
     // RECOVERY AND INITIALIZATION //
 
@@ -123,6 +121,41 @@ impl DB {
         let mut db = DB::new(name, opt);
         db.recover_read_only()?;
         Ok(db)
+    }
+
+    /// Safely read a value from a LevelDB database at the given path.
+    ///
+    /// Opens the database in read-only mode, retrieves the value, and closes it.
+    /// Runs on a blocking thread via `spawn_blocking` and wraps the operation in
+    /// `catch_unwind` to convert panics (e.g. from corrupt data) into errors.
+    /// If the operation exceeds `timeout`, returns a timeout error.
+    pub async fn safe_get<P: AsRef<Path> + Send + 'static>(
+        path: P,
+        key: &[u8],
+        timeout: std::time::Duration,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = key.to_vec();
+        let task = tokio::task::spawn_blocking(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut db = DB::open_read_only(path, Options::default())?;
+                Ok(db.get(&key).map(|b| b.to_vec()))
+            }))
+            .unwrap_or_else(|e| {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    format!("panic: {}", s)
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    format!("panic: {}", s)
+                } else {
+                    "panic during DB read".to_string()
+                };
+                err(StatusCode::Corruption, &msg)
+            })
+        });
+        match tokio::time::timeout(timeout, task).await {
+            Ok(join_result) => join_result
+                .unwrap_or_else(|e| err(StatusCode::IOError, &format!("task join failed: {}", e))),
+            Err(_) => err(StatusCode::IOError, "safe_get timed out"),
+        }
     }
 
     pub fn open<P: AsRef<Path>>(name: P, opt: Options) -> Result<DB> {
@@ -249,8 +282,7 @@ impl DB {
         for file in &filenames {
             if let Ok((num, typ)) = parse_file_name(file) {
                 if typ == FileType::Log
-                    && (num >= self.vset.borrow().log_num
-                        || num == self.vset.borrow().prev_log_num)
+                    && (num >= self.vset.borrow().log_num || num == self.vset.borrow().prev_log_num)
                 {
                     log_files.push(num);
                 }

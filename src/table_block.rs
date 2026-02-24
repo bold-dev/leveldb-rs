@@ -13,6 +13,9 @@ use integer_encoding::FixedInt;
 
 /// Reads the data for the specified block handle from a file.
 fn read_bytes_from_file(f: &dyn RandomAccess, offset: usize, size: usize) -> Result<Vec<u8>> {
+    if size > crate::error::MAX_ALLOC_SIZE {
+        return err(StatusCode::Corruption, "unreasonable block size");
+    }
     let mut buf = vec![0; size];
     let bytes_read = f.read_at(offset, &mut buf)?;
     if bytes_read != size {

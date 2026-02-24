@@ -49,10 +49,16 @@ impl Env for PosixDiskEnv {
             .map_err(|e| map_err_with_name("open (randomaccess)", p, e))
     }
     fn open_writable_file(&self, p: &Path) -> Result<Box<dyn std::io::Write>> {
-        err(StatusCode::NotSupported, &format!("open (write): read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("open (write): read-only env: {}", path_to_str(p)),
+        )
     }
     fn open_appendable_file(&self, p: &Path) -> Result<Box<dyn std::io::Write>> {
-        err(StatusCode::NotSupported, &format!("open (append): read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("open (append): read-only env: {}", path_to_str(p)),
+        )
     }
 
     fn exists(&self, p: &Path) -> Result<bool> {
@@ -77,27 +83,49 @@ impl Env for PosixDiskEnv {
     }
 
     fn delete(&self, p: &Path) -> Result<()> {
-        err(StatusCode::NotSupported, &format!("delete: read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("delete: read-only env: {}", path_to_str(p)),
+        )
     }
     fn mkdir(&self, p: &Path) -> Result<()> {
-        err(StatusCode::NotSupported, &format!("mkdir: read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("mkdir: read-only env: {}", path_to_str(p)),
+        )
     }
     fn rmdir(&self, p: &Path) -> Result<()> {
-        err(StatusCode::NotSupported, &format!("rmdir: read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("rmdir: read-only env: {}", path_to_str(p)),
+        )
     }
     fn rename(&self, old: &Path, new: &Path) -> Result<()> {
-        err(StatusCode::NotSupported, &format!("rename: read-only env: {} -> {}", path_to_str(old), path_to_str(new)))
+        err(
+            StatusCode::NotSupported,
+            &format!(
+                "rename: read-only env: {} -> {}",
+                path_to_str(old),
+                path_to_str(new)
+            ),
+        )
     }
 
     fn lock(&self, p: &Path) -> Result<FileLock> {
-        err(StatusCode::NotSupported, &format!("lock: read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("lock: read-only env: {}", path_to_str(p)),
+        )
     }
     fn unlock(&self, _: FileLock) -> Result<()> {
         Ok(())
     }
 
     fn new_logger(&self, p: &Path) -> Result<Logger> {
-        err(StatusCode::NotSupported, &format!("new_logger: read-only env: {}", path_to_str(p)))
+        err(
+            StatusCode::NotSupported,
+            &format!("new_logger: read-only env: {}", path_to_str(p)),
+        )
     }
 
     fn micros(&self) -> u64 {
@@ -131,7 +159,10 @@ mod tests {
     fn test_read_ops_work() {
         // Create a real file using std::fs directly, then read it via PosixDiskEnv.
         let path = Path::new("diskenv_test_read.tmp");
-        std::fs::File::create(path).unwrap().write_all(b"hello").unwrap();
+        std::fs::File::create(path)
+            .unwrap()
+            .write_all(b"hello")
+            .unwrap();
 
         let env = PosixDiskEnv::new();
         assert!(env.exists(path).unwrap());

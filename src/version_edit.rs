@@ -42,6 +42,12 @@ fn tag_to_enum(t: u32) -> Option<EditTag> {
 
 fn read_length_prefixed<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     if let Ok(klen) = reader.read_varint() {
+        if klen > crate::error::MAX_ALLOC_SIZE {
+            return err(
+                StatusCode::Corruption,
+                "unreasonable length in version edit",
+            );
+        }
         let mut keybuf = vec![0; klen];
 
         if let Ok(l) = reader.read(&mut keybuf) {
