@@ -26,6 +26,8 @@ tokio = { version = "1.37.0", features = ["rt", "sync", "time"] }
 [dev-dependencies]
 time-test = "0.3"
 bencher = "0.1"
+tokio = { version = "1.37.0", features = ["rt", "sync", "time", "macros"] }
+fs2 = "0.4"
 
 [[bench]]
 name = "maps_bench"
@@ -40,4 +42,7 @@ members = [
   "examples/stresstest",
   "examples/mcpe",
   "examples/kvserver",
+]
+exclude = [
+  "testdb-generator",
 ]
