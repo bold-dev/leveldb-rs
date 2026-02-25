@@ -52,6 +52,9 @@ pub fn read_table_block(
     location: &BlockHandle,
 ) -> Result<Block> {
     let data_size = location.size();
+    if data_size > crate::error::MAX_ALLOC_SIZE {
+        return err(StatusCode::Corruption, "unreasonable block size");
+    }
     let trailer_size =
         table_builder::TABLE_BLOCK_COMPRESS_LEN + table_builder::TABLE_BLOCK_CKSUM_LEN;
     let total_read_size = data_size + trailer_size;
