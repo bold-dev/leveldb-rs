@@ -193,15 +193,27 @@ mod tests {
     use super::*;
 
     use crate::cmp::DefaultCmp;
-    use crate::skipmap::tests;
     use crate::test_util::{test_iterator_properties, LdbIteratorIter, TestLdbIter};
     use crate::types::{current_key_val, LdbIterator};
 
+    fn test_data() -> Vec<(&'static [u8], &'static [u8])> {
+        vec![
+            (b"aba", b"def"),
+            (b"abb", b"def"),
+            (b"abc", b"def"),
+            (b"abd", b"def"),
+            (b"abe", b"def"),
+            (b"abf", b"def"),
+            (b"abg", b"def"),
+            (b"abh", b"def"),
+        ]
+    }
+
     #[test]
     fn test_merging_one() {
-        let skm = tests::make_skipmap();
-        let iter = skm.iter();
-        let mut iter2 = skm.iter();
+        let data = test_data();
+        let iter = TestLdbIter::new(data.clone());
+        let mut iter2 = TestLdbIter::new(data);
 
         let mut miter = MergingIter::new(Rc::new(Box::new(DefaultCmp)), vec![Box::new(iter)]);
 
@@ -217,9 +229,9 @@ mod tests {
 
     #[test]
     fn test_merging_two() {
-        let skm = tests::make_skipmap();
-        let iter = skm.iter();
-        let iter2 = skm.iter();
+        let data = test_data();
+        let iter = TestLdbIter::new(data.clone());
+        let iter2 = TestLdbIter::new(data);
 
         let mut miter = MergingIter::new(
             Rc::new(Box::new(DefaultCmp)),

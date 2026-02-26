@@ -1,68 +1,76 @@
 use crate::cmp::{Cmp, MemtableKeyCmp};
 use crate::key_types::{build_memtable_key, parse_internal_key, parse_memtable_key, ValueType};
 use crate::key_types::{LookupKey, UserKey};
-use crate::skipmap::{SkipMap, SkipMapIter};
-use crate::types::{current_key_val, LdbIterator, SequenceNumber};
+use crate::types::{LdbIterator, SequenceNumber};
 
+use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 
 use bytes::Bytes;
 use integer_encoding::FixedInt;
 
-/// Provides Insert/Get/Iterate, based on the SkipMap implementation.
-/// MemTable uses MemtableKeys internally, that is, it stores key and value in the [Skipmap] key.
+/// Provides Insert/Get/Iterate over a sorted Vec of memtable keys.
+/// MemTable uses MemtableKeys internally — key and value are packed into a single entry.
 pub struct MemTable {
-    map: SkipMap,
+    entries: Rc<RefCell<Vec<Vec<u8>>>>,
+    cmp: Rc<Box<dyn Cmp>>,
+    approx_mem: usize,
 }
 
 impl MemTable {
-    /// Returns a new MemTable.
-    /// This wraps opt.cmp inside a MemtableKey-specific comparator.
+    /// Returns a new MemTable, wrapping cmp inside a MemtableKeyCmp.
     pub fn new(cmp: Rc<Box<dyn Cmp>>) -> MemTable {
         MemTable::new_raw(Rc::new(Box::new(MemtableKeyCmp(cmp))))
     }
 
-    /// Doesn't wrap the comparator in a MemtableKeyCmp.
     fn new_raw(cmp: Rc<Box<dyn Cmp>>) -> MemTable {
         MemTable {
-            map: SkipMap::new(cmp),
+            entries: Rc::new(RefCell::new(Vec::new())),
+            cmp,
+            approx_mem: 0,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.entries.borrow().len()
     }
 
     pub fn approx_mem_usage(&self) -> usize {
-        self.map.approx_memory()
+        self.approx_mem
     }
 
     pub fn add(&mut self, seq: SequenceNumber, t: ValueType, key: UserKey<'_>, value: &[u8]) {
-        self.map
-            .insert(build_memtable_key(key, value, t, seq), Vec::new())
+        let memkey = build_memtable_key(key, value, t, seq);
+        let added_mem = memkey.len();
+        let mut entries = self.entries.borrow_mut();
+        let pos = entries.partition_point(|e| self.cmp.cmp(e, &memkey) == Ordering::Less);
+        entries.insert(pos, memkey);
+        self.approx_mem += added_mem;
     }
 
-    /// get returns the value for the given entry and whether the entry is marked as deleted. This
-    /// is to distinguish between not-found and found-deleted.
+    /// get returns the value for the given entry and whether the entry is marked as deleted.
     #[allow(unused_variables)]
     pub fn get(&self, key: &LookupKey) -> (Option<Bytes>, bool) {
-        let mut iter = self.map.iter();
-        iter.seek(key.memtable_key());
+        let entries = self.entries.borrow();
+        let mkey = key.memtable_key();
+        let pos = entries.partition_point(|e| self.cmp.cmp(e, mkey) == Ordering::Less);
 
-        if let Some((foundkey, _)) = current_key_val(&iter) {
-            let (fkeylen, fkeyoff, tag, vallen, valoff) = parse_memtable_key(&foundkey);
+        if pos >= entries.len() {
+            return (None, false);
+        }
 
-            // Compare user key -- if equal, proceed
-            // We only care about user key equality here
-            if key.user_key() == &foundkey[fkeyoff..fkeyoff + fkeylen] {
-                if tag & 0xff == ValueType::TypeValue as u64 {
-                    return (
-                        Some(foundkey[valoff..valoff + vallen].to_vec().into()),
-                        false,
-                    );
-                } else {
-                    return (None, true);
-                }
+        let foundkey = &entries[pos];
+        let (fkeylen, fkeyoff, tag, vallen, valoff) = parse_memtable_key(foundkey);
+
+        if key.user_key() == &foundkey[fkeyoff..fkeyoff + fkeylen] {
+            if tag & 0xff == ValueType::TypeValue as u64 {
+                return (
+                    Some(foundkey[valoff..valoff + vallen].to_vec().into()),
+                    false,
+                );
+            } else {
+                return (None, true);
             }
         }
         (None, false)
@@ -70,74 +78,93 @@ impl MemTable {
 
     pub fn iter(&self) -> MemtableIterator {
         MemtableIterator {
-            skipmapiter: self.map.iter(),
+            entries: self.entries.clone(),
+            cmp: self.cmp.clone(),
+            current_idx: None,
         }
     }
 }
 
-/// MemtableIterator is an iterator over a MemTable. It is mostly concerned with converting to and
-/// from the MemtableKey format used in the inner map; all key-taking or -returning methods deal
-/// with InternalKeys.
-///
-/// This iterator does not skip deleted entries.
+/// MemtableIterator is an iterator over a MemTable. Key-returning methods deal with InternalKeys.
 pub struct MemtableIterator {
-    skipmapiter: SkipMapIter,
+    entries: Rc<RefCell<Vec<Vec<u8>>>>,
+    cmp: Rc<Box<dyn Cmp>>,
+    current_idx: Option<usize>,
 }
 
 impl LdbIterator for MemtableIterator {
     fn advance(&mut self) -> bool {
-        if !self.skipmapiter.advance() {
-            return false;
+        let next_idx = match self.current_idx {
+            None => 0,
+            Some(i) => i + 1,
+        };
+        if next_idx < self.entries.borrow().len() {
+            self.current_idx = Some(next_idx);
+            true
+        } else {
+            self.current_idx = None;
+            false
         }
-        self.skipmapiter.valid()
     }
-    fn reset(&mut self) {
-        self.skipmapiter.reset();
-    }
-    fn prev(&mut self) -> bool {
-        // Make sure this is actually needed (skipping deleted values?).
-        loop {
-            if !self.skipmapiter.prev() {
-                return false;
-            }
-            if let Some((key, _val)) = self.skipmapiter.current() {
-                let (_, _, tag, _, _) = parse_memtable_key(&key);
 
-                if tag & 0xff == ValueType::TypeValue as u64 {
-                    return true;
-                } else {
-                    continue;
-                }
-            } else {
-                return false;
-            }
+    fn reset(&mut self) {
+        self.current_idx = None;
+    }
+
+    fn seek(&mut self, to: &[u8]) {
+        let (_, seq, ukey) = parse_internal_key(to);
+        let lkey = LookupKey::new(ukey, seq);
+        let mkey = lkey.memtable_key();
+        let entries = self.entries.borrow();
+        let pos = entries.partition_point(|e| self.cmp.cmp(e, mkey) == Ordering::Less);
+        if pos < entries.len() {
+            self.current_idx = Some(pos);
+        } else {
+            self.current_idx = None;
         }
     }
+
     fn valid(&self) -> bool {
-        self.skipmapiter.valid()
+        match self.current_idx {
+            None => false,
+            Some(i) => i < self.entries.borrow().len(),
+        }
     }
-    /// current returns the current key (in InternalKey format) and value.
+
     fn current(&self) -> Option<(Bytes, Bytes)> {
         if !self.valid() {
             return None;
         }
-
-        if let Some((key_bytes, _val_bytes)) = self.skipmapiter.current() {
-            let (keylen, keyoff, _, vallen, valoff) = parse_memtable_key(&key_bytes);
-            let internal_key =
-                Bytes::copy_from_slice(&key_bytes[keyoff..keyoff + keylen + u64::required_space()]);
-            let value = Bytes::copy_from_slice(&key_bytes[valoff..valoff + vallen]);
-            Some((internal_key, value))
-        } else {
-            None
-        }
+        let entries = self.entries.borrow();
+        let i = self.current_idx.unwrap();
+        let key_bytes = &entries[i];
+        let (keylen, keyoff, _, vallen, valoff) = parse_memtable_key(key_bytes);
+        let internal_key =
+            Bytes::copy_from_slice(&key_bytes[keyoff..keyoff + keylen + u64::required_space()]);
+        let value = Bytes::copy_from_slice(&key_bytes[valoff..valoff + vallen]);
+        Some((internal_key, value))
     }
-    /// seek takes an InternalKey.
-    fn seek(&mut self, to: &[u8]) {
-        // Assemble the correct memtable key from the supplied InternalKey.
-        let (_, seq, ukey) = parse_internal_key(to);
-        self.skipmapiter
-            .seek(LookupKey::new(ukey, seq).memtable_key());
+
+    fn prev(&mut self) -> bool {
+        loop {
+            match self.current_idx {
+                None => return false,
+                Some(0) => {
+                    self.current_idx = None;
+                    return false;
+                }
+                Some(i) => {
+                    self.current_idx = Some(i - 1);
+                    let entries = self.entries.borrow();
+                    let key_bytes = &entries[i - 1];
+                    let (_, _, tag, _, _) = parse_memtable_key(key_bytes);
+                    if tag & 0xff == ValueType::TypeValue as u64 {
+                        return true;
+                    }
+                    // TypeDeletion: keep going back
+                }
+            }
+        }
     }
 }
 
@@ -157,17 +184,7 @@ mod tests {
     use crate::key_types::{parse_tag, truncate_to_userkey};
     use crate::options;
     use crate::test_util::{test_iterator_properties, LdbIteratorIter};
-
-    #[test]
-    fn test_shift_left() {
-        let mut v = vec![1, 2, 3, 4, 5];
-        shift_left(&mut v, 1);
-        assert_eq!(v, vec![2, 3, 4, 5]);
-
-        let mut v = vec![1, 2, 3, 4, 5];
-        shift_left(&mut v, 4);
-        assert_eq!(v, vec![5]);
-    }
+    use crate::types::current_key_val;
 
     fn get_memtable() -> MemTable {
         let mut mt = MemTable::new(options::for_test().cmp);
@@ -202,8 +219,8 @@ mod tests {
         );
 
         assert_eq!(
-            mt.map.iter().next().unwrap().0,
-            &[11, 97, 98, 99, 1, 123, 0, 0, 0, 0, 0, 0, 3, 49, 50, 51]
+            mt.entries.borrow()[0],
+            vec![11, 97, 98, 99, 1, 123, 0, 0, 0, 0, 0, 0, 3, 49, 50, 51]
         );
         assert_eq!(
             mt.iter().next().unwrap().0,
@@ -303,8 +320,7 @@ mod tests {
         let mut iter = mt.iter();
 
         let expected = [
-            "123".as_bytes(), /* i.e., the abc entry with
-                               * higher sequence number comes first */
+            "123".as_bytes(), /* abc with higher sequence number comes first */
             "122".as_bytes(),
             "124".as_bytes(),
             // deleted entry:

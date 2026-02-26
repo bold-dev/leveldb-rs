@@ -45,8 +45,12 @@ impl Footer {
     }
 
     pub fn decode(from: &[u8]) -> Option<Footer> {
-        assert!(from.len() >= FULL_FOOTER_LENGTH);
-        assert_eq!(&from[FOOTER_LENGTH..], &MAGIC_FOOTER_ENCODED);
+        if from.len() < FULL_FOOTER_LENGTH {
+            return None;
+        }
+        if &from[FOOTER_LENGTH..] != &MAGIC_FOOTER_ENCODED {
+            return None;
+        }
         let (meta, metalen) = BlockHandle::decode(&from[0..])?;
         let (ix, _) = BlockHandle::decode(&from[metalen..])?;
 

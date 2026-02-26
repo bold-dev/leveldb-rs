@@ -72,6 +72,13 @@ impl Compressor for SnappyCompressor {
     }
 
     fn decode(&self, block: Vec<u8>) -> crate::Result<Vec<u8>> {
+        let decompressed_len = snap::raw::decompress_len(&block)?;
+        if decompressed_len > crate::error::MAX_ALLOC_SIZE {
+            return crate::error::err(
+                crate::error::StatusCode::Corruption,
+                "unreasonable decompressed block size",
+            );
+        }
         Ok(snap::raw::Decoder::new().decompress_vec(&block)?)
     }
 }

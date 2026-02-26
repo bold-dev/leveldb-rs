@@ -18,7 +18,9 @@ struct InnerSnapshot {
 
 impl Drop for InnerSnapshot {
     fn drop(&mut self) {
-        self.sl.borrow_mut().delete(self.id);
+        if let Ok(mut sl) = self.sl.try_borrow_mut() {
+            sl.delete(self.id);
+        }
     }
 }
 

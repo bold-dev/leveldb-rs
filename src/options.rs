@@ -1,5 +1,6 @@
 use crate::cmp::{Cmp, DefaultCmp};
 use crate::compressor::{self, Compressor, CompressorId};
+use crate::disk_env::PosixDiskEnv;
 use crate::env::Env;
 use crate::infolog::{self, Logger};
 use crate::mem_env::MemEnv;
@@ -46,17 +47,11 @@ pub struct Options {
     pub filter_policy: filter::BoxedFilterPolicy,
 }
 
-#[cfg(feature = "fs")]
-type DefaultEnv = crate::disk_env::PosixDiskEnv;
-
-#[cfg(not(feature = "fs"))]
-type DefaultEnv = crate::mem_env::MemEnv;
-
 impl Default for Options {
     fn default() -> Options {
         Options {
             cmp: Rc::new(Box::new(DefaultCmp)),
-            env: Rc::new(Box::new(DefaultEnv::new())),
+            env: Rc::new(Box::new(PosixDiskEnv::new())),
             log: None,
             create_if_missing: true,
             error_if_exists: false,

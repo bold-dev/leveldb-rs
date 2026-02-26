@@ -9,12 +9,8 @@ extern crate rusty_leveldb;
 use bencher::Bencher;
 use rand::Rng;
 
-use rusty_leveldb::DefaultCmp;
-use rusty_leveldb::SkipMap;
-
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 fn gen_key_val<R: Rng>(gen: &mut R, keylen: usize, vallen: usize) -> (Vec<u8>, Vec<u8>) {
     let mut key = Vec::with_capacity(keylen);
@@ -34,35 +30,6 @@ fn bench_gen_key_val(b: &mut Bencher) {
     b.iter(|| {
         let (k, _v) = gen_key_val(&mut gen, 10, 10);
         k.len();
-    });
-}
-
-fn bench_skipmap_insert(b: &mut Bencher) {
-    let mut gen = rand::thread_rng();
-
-    let mut skm = SkipMap::new(Rc::new(Box::new(DefaultCmp)));
-
-    b.iter(|| {
-        let (mut k, v) = gen_key_val(&mut gen, 10, 10);
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k.clone(), v.clone());
-        k[9] += 1;
-        skm.insert(k, v);
     });
 }
 
@@ -125,7 +92,6 @@ fn bench_btree_insert(b: &mut Bencher) {
 benchmark_group!(
     basic,
     bench_gen_key_val,
-    bench_skipmap_insert,
     bench_hashmap_insert,
     bench_btree_insert,
 );
